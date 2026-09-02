@@ -27,13 +27,13 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm typecheck
-
+      # tsc -b resolve a ordem entre pacotes por project references
       - name: Build
         run: pnpm build
 
-      # depois do build: os pacotes importam uns aos outros por dist/
+      - name: Typecheck
+        run: pnpm typecheck
+
       - name: Test
         run: pnpm test
 

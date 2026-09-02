@@ -3,12 +3,15 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@9.15.9",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "build": "pnpm -r --filter './packages/**' build",
-    "typecheck": "pnpm -r --filter './packages/**' typecheck",
+    "build": "tsc -b",
+    "typecheck": "tsc -b --force",
     "test": "pnpm -r --filter './packages/**' test",
-    "lint": "pnpm typecheck"
+    "lint": "pnpm typecheck",
+    "clean": "tsc -b --clean"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

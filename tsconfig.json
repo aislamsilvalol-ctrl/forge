@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/domain"
+    },
+    {
+      "path": "packages/capital"
+    },
+    {
+      "path": "packages/decision"
+    },
+    {
+      "path": "packages/sentinel"
+    }
+  ]
+}
