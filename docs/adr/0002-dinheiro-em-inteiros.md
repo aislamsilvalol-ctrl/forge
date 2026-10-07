@@ -19,3 +19,9 @@ com USD silenciosamente — o construtor rejeita.
 ## Consequências
 Toda aritmética passa por `Money`. Divisão e percentuais usam
 `times(fator)` com arredondamento explícito, auditável.
+
+`fromMajor` converte pela representação decimal do número, não por
+`major * 100`. BRL, USD e EUR têm duas casas: um valor com mais casas é
+recusado, sem arredondar — arredondar perderia ou inventaria um centavo.
+`1.005` e o resíduo de `0.1 + 0.2` não são centavos exatos; a soma certa
+é `fromMajor(0.1).plus(fromMajor(0.2))`.

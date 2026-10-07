@@ -15,8 +15,27 @@ describe("precisão", () => {
     const a = Money.fromMajor(0.1, "BRL");
     const b = Money.fromMajor(0.2, "BRL");
     expect(a.plus(b).toMajor()).toBe(0.3);
+    expect(a.plus(b).minor).toBe(30);
     // a mesma conta em float falha
     expect(0.1 + 0.2).not.toBe(0.3);
+  });
+
+  it("converte pela representação decimal e recusa o que não cabe em centavos", () => {
+    // `1.005 * 100` em float é 100.4999…; Math.round perdia o centavo (100).
+    // Mais casas do que a moeda permite são recusadas — não arredondadas.
+    expect(() => Money.fromMajor(1.005, "BRL")).toThrow(InvalidMoneyError);
+    expect(() => Money.fromMajor(-1.005, "BRL")).toThrow(InvalidMoneyError);
+    // `0.1 + 0.2` chega como 0.30000000000000004, que não é um centavo exato.
+    expect(() => Money.fromMajor(0.1 + 0.2, "BRL")).toThrow(InvalidMoneyError);
+    expect(Money.fromMajor(-19.99, "USD").minor).toBe(-1999);
+
+    // Valor grande em que `major * 100` cai no centavo vizinho.
+    const large = 90071992547409.9;
+    expect(Math.round(large * 100)).toBe(9007199254740991);
+    expect(Money.fromMajor(large, "BRL").minor).toBe(9007199254740990);
+    expect(Money.fromMajor(9007199254740.99, "EUR").minor).toBe(
+      900719925474099,
+    );
   });
 
   it("mil somas de um centavo dão exatamente dez reais", () => {
