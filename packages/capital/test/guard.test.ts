@@ -16,6 +16,7 @@ import {
 import {
   CapitalGuard,
   CapitalLedger,
+  IdempotencyConflictError,
   InMemoryCapitalLedgerStore,
   InMemoryReservationStore,
   derivePosition,
@@ -282,6 +283,71 @@ describe("idempotência", () => {
 
     const pos = await guard.position(WS, "BRL");
     expect(pos.reserved.toMajor()).toBe(30);
+  });
+
+  it("retry de recordSpend e revoke com a mesma chave não grava outra linha", async () => {
+    const { guard, ledger } = setup();
+    await guard.authorize(WS, brl(100), "envelope");
+    const reserved = await guard.reserve(WS, brl(40), "ação");
+    if (!reserved.allowed) throw new Error("reserva deveria passar");
+    await guard.commit(reserved.value.id, "executado");
+
+    const firstSpend = await guard.recordSpend(WS, brl(37.5), "relato", {
+      reservationId: reserved.value.id,
+      idempotencyKey: "spend-1",
+    });
+    const retrySpend = await guard.recordSpend(WS, brl(37.5), "relato de novo", {
+      idempotencyKey: "spend-1",
+    });
+    expect(retrySpend).toEqual(firstSpend);
+    expect(retrySpend.spent.toMajor()).toBe(37.5);
+
+    const firstRevoke = await guard.revoke(WS, brl(20), "reduz", "rev-1");
+    const retryRevoke = await guard.revoke(WS, brl(20), "reduz de novo", "rev-1");
+    expect(retryRevoke).toEqual(firstRevoke);
+    expect(retryRevoke.authorized.toMajor()).toBe(80);
+
+    const kinds = (await ledger.entries(WS)).map((e) => e.kind);
+    expect(kinds).toEqual(["AUTHORIZE", "RESERVE", "COMMIT", "SPEND", "REVOKE"]);
+  });
+
+  it("chave de gasto ou revogação reusada em outro movimento ou valor é conflito e não grava", async () => {
+    const { guard, ledger } = setup();
+    await guard.authorize(WS, brl(100), "envelope", "auth-key");
+    await expect(
+      guard.recordSpend(WS, brl(10), "gasto com chave da autorização", {
+        idempotencyKey: "auth-key",
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+    await expect(
+      guard.revoke(WS, brl(10), "revogação com chave da autorização", "auth-key"),
+    ).rejects.toMatchObject({ reason: "IDEMPOTENCY_CONFLICT" });
+
+    await guard.recordSpend(WS, brl(10), "relato", { idempotencyKey: "spend-1" });
+    await expect(
+      guard.recordSpend(WS, brl(12), "outro valor", { idempotencyKey: "spend-1" }),
+    ).rejects.toMatchObject({ reason: "IDEMPOTENCY_CONFLICT" });
+    await expect(
+      guard.revoke(WS, brl(10), "revoga com chave do gasto", "spend-1"),
+    ).rejects.toMatchObject({ reason: "IDEMPOTENCY_CONFLICT" });
+
+    await guard.revoke(WS, brl(15), "reduz", "rev-1");
+    await expect(
+      guard.revoke(WS, brl(16), "outro valor", "rev-1"),
+    ).rejects.toMatchObject({ reason: "IDEMPOTENCY_CONFLICT" });
+    await expect(
+      guard.recordSpend(WS, Money.fromMajor(15, "USD"), "outra moeda", {
+        idempotencyKey: "rev-1",
+      }),
+    ).rejects.toMatchObject({ reason: "IDEMPOTENCY_CONFLICT" });
+
+    const entries = await ledger.entries(WS);
+    expect(entries.map((e) => e.kind)).toEqual(["AUTHORIZE", "SPEND", "REVOKE"]);
+    expect(entries.find((e) => e.kind === "SPEND")?.amount.toMajor()).toBe(10);
+    expect(entries.find((e) => e.kind === "REVOKE")?.amount.toMajor()).toBe(15);
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.authorized.toMajor()).toBe(85);
+    expect(pos.spent.toMajor()).toBe(10);
   });
 });
 

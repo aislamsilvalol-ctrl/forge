@@ -41,6 +41,21 @@ export type DenialReason =
   | "RESERVATION_ALREADY_SETTLED"
   | "IDEMPOTENCY_CONFLICT";
 
+/**
+ * A chave já está no extrato, ligada a outro movimento ou outro valor.
+ * `reserve` devolve isso como `GuardOutcome`; `recordSpend` e `revoke`
+ * continuam devolvendo `CapitalPosition` no sucesso, então o conflito
+ * sobe como erro — sem gravar a segunda linha.
+ */
+export class IdempotencyConflictError extends Error {
+  readonly reason = "IDEMPOTENCY_CONFLICT" as const;
+
+  constructor(detail: string) {
+    super(detail);
+    this.name = "IdempotencyConflictError";
+  }
+}
+
 export type GuardOutcome<T> =
   | { readonly allowed: true; readonly value: T }
   | {
@@ -126,13 +141,21 @@ export class CapitalGuard {
     });
   }
 
+  /**
+   * Reduz o teto autorizado. Com `idempotencyKey`, a mesma chave + REVOKE +
+   * o mesmo valor devolve a posição sem gravar outra linha. Chave já usada
+   * em outro movimento ou outro valor lança `IdempotencyConflictError`.
+   */
   async revoke(
     workspaceId: WorkspaceId,
     amount: Money,
     reason: string,
+    idempotencyKey?: string,
   ): Promise<CapitalPosition> {
     return this.mutex.runExclusive(workspaceId, async () => {
-      await this.ledger.append(workspaceId, "REVOKE", amount, reason);
+      await this.appendIdempotent(workspaceId, "REVOKE", amount, reason, {
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      });
       return this.ledger.position(workspaceId, amount.currency);
     });
   }
@@ -389,6 +412,10 @@ export class CapitalGuard {
    * O provedor reportou gasto. Aceita valor diferente do comprometido — a
    * entrega real quase nunca bate com o orçamento, e mascarar a diferença
    * seria mentir para o Guard.
+   *
+   * Com `idempotencyKey`, a mesma chave + SPEND + o mesmo valor devolve a
+   * posição sem gravar outra linha. Chave já usada em outro movimento ou
+   * outro valor lança `IdempotencyConflictError` e não grava.
    */
   async recordSpend(
     workspaceId: WorkspaceId,
@@ -397,9 +424,39 @@ export class CapitalGuard {
     options: { reservationId?: ReservationId; idempotencyKey?: string } = {},
   ): Promise<CapitalPosition> {
     return this.mutex.runExclusive(workspaceId, async () => {
-      await this.ledger.append(workspaceId, "SPEND", amount, reason, options);
+      await this.appendIdempotent(workspaceId, "SPEND", amount, reason, options);
       return this.ledger.position(workspaceId, amount.currency);
     });
+  }
+
+  /**
+   * Mesma chave e mesmo movimento devolvem a entrada já gravada. Chave
+   * reaproveitada em outro kind ou outro valor não pode cair no retorno
+   * silencioso do ledger — isso faria o chamador achar que o retry entrou.
+   */
+  private async appendIdempotent(
+    workspaceId: WorkspaceId,
+    kind: "REVOKE" | "SPEND",
+    amount: Money,
+    reason: string,
+    options: { reservationId?: ReservationId; idempotencyKey?: string },
+  ): Promise<void> {
+    const entry = await this.ledger.append(
+      workspaceId,
+      kind,
+      amount,
+      reason,
+      options,
+    );
+    if (
+      options.idempotencyKey &&
+      (entry.kind !== kind || !entry.amount.equals(amount))
+    ) {
+      throw new IdempotencyConflictError(
+        `Chave de idempotência já pertence a ${entry.kind} de ${entry.amount.toString()}; ` +
+          `o movimento pedido é ${kind} de ${amount.toString()}`,
+      );
+    }
   }
 
   private async notFound(
