@@ -353,6 +353,30 @@ describe("idempotência", () => {
   });
 });
 
+describe("configuração do colchão", () => {
+  it("rejeita pendingBufferRatio negativo, acima de 1 ou não finito", () => {
+    expect(() => setup(-0.01)).toThrow(/pendingBufferRatio/);
+    expect(() => setup(-1)).toThrow(/entre 0 e 1/);
+    expect(() => setup(1.01)).toThrow(/pendingBufferRatio/);
+    expect(() => setup(Number.NaN)).toThrow(/pendingBufferRatio/);
+    expect(() => setup(Number.POSITIVE_INFINITY)).toThrow(/pendingBufferRatio/);
+  });
+
+  it("aceita os extremos 0 e 1", async () => {
+    const aberto = setup(0);
+    await aberto.guard.authorize(WS, brl(100), "envelope");
+    expect((await aberto.guard.spendableNow(WS, "BRL")).toMajor()).toBe(100);
+
+    const cheio = setup(1);
+    await cheio.guard.authorize(WS, brl(100), "envelope");
+    const r = await cheio.guard.reserve(WS, brl(40), "ação");
+    if (!r.allowed) throw new Error("reserva deveria passar");
+    await cheio.guard.commit(r.value.id, "executado");
+    // disponível 60, colchão de 100% sobre 40 comprometido → 20
+    expect((await cheio.guard.spendableNow(WS, "BRL")).toMajor()).toBe(20);
+  });
+});
+
 describe("ciclo de vida da reserva", () => {
   it("release devolve o dinheiro ao disponível", async () => {
     const { guard } = setup();

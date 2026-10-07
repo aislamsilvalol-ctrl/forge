@@ -108,8 +108,20 @@ export interface CapitalGuardOptions {
    * Fração do comprometido-não-confirmado tratada como risco adicional.
    * Cobre a entrega estourar o orçamento entre a execução e o relato.
    * 0.1 = considera 10% a mais do que foi comprometido.
+   * Intervalo fechado: 0 ≤ ratio ≤ 1. Fora disso o construtor recusa.
    */
   readonly pendingBufferRatio?: number;
+}
+
+function pendingBufferRatioOrDefault(ratio: number | undefined): number {
+  const value = ratio ?? 0.1;
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(
+      `pendingBufferRatio precisa estar entre 0 e 1 ` +
+        `(fração do comprometido ainda não confirmado), recebido ${String(ratio)}`,
+    );
+  }
+  return value;
 }
 
 export class CapitalGuard {
@@ -123,7 +135,7 @@ export class CapitalGuard {
     private readonly mutex: Mutex = new InProcessMutex(),
     options: CapitalGuardOptions = {},
   ) {
-    this.bufferRatio = options.pendingBufferRatio ?? 0.1;
+    this.bufferRatio = pendingBufferRatioOrDefault(options.pendingBufferRatio);
   }
 
   /** Autoriza capital. É o único ponto que AUMENTA o que o motor pode gastar. */
