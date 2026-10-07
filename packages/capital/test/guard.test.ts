@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  CapitalEntryId,
   FixedClock,
   Money,
   ReservationId,
@@ -20,6 +21,7 @@ import {
   InMemoryCapitalLedgerStore,
   InMemoryReservationStore,
   derivePosition,
+  type CapitalEntry,
 } from "../src/index.js";
 
 const WS = WorkspaceId("ws-1");
@@ -478,6 +480,87 @@ describe("invariantes do extrato", () => {
     // e nada mais pode ser reservado nesse estado
     const nova = await guard.reserve(WS, brl(1), "tentativa");
     expect(nova.allowed).toBe(false);
+  });
+
+  it("RELEASE ou COMMIT acima do reservado é recusado e não reduz a exposição", async () => {
+    const { guard, ledger } = setup();
+    await guard.authorize(WS, brl(100), "envelope");
+    const r = await guard.reserve(WS, brl(40), "ação");
+    if (!r.allowed) throw new Error("reserva deveria passar");
+
+    await expect(
+      ledger.append(WS, "RELEASE", brl(50), "maior que o reservado"),
+    ).rejects.toThrow(/reservado negativo/);
+    await expect(
+      ledger.append(WS, "COMMIT", brl(41), "maior que o reservado"),
+    ).rejects.toThrow(/reservado negativo/);
+
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.reserved.toMajor()).toBe(40);
+    expect(pos.exposure.toMajor()).toBe(40);
+    expect(pos.available.toMajor()).toBe(60);
+
+    const committed = await guard.commit(r.value.id, "executado");
+    expect(committed.allowed).toBe(true);
+    const after = await guard.position(WS, "BRL");
+    expect(after.reserved.toMajor()).toBe(0);
+    expect(after.committed.toMajor()).toBe(40);
+    expect(after.exposure.toMajor()).toBe(40);
+  });
+
+  it("retry da mesma RELEASE não é recusado depois que o reservado já zerou", async () => {
+    const { guard, ledger } = setup();
+    await guard.authorize(WS, brl(100), "envelope");
+    await ledger.append(WS, "RESERVE", brl(40), "separado", {
+      idempotencyKey: "res-1",
+      reservationId: ReservationId("res-1"),
+    });
+    const first = await ledger.append(WS, "RELEASE", brl(40), "devolve", {
+      idempotencyKey: "rel-1",
+      reservationId: ReservationId("res-1"),
+    });
+    const retry = await ledger.append(WS, "RELEASE", brl(40), "devolve", {
+      idempotencyKey: "rel-1",
+      reservationId: ReservationId("res-1"),
+    });
+    expect(retry.id).toBe(first.id);
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.reserved.toMajor()).toBe(0);
+    expect(pos.exposure.toMajor()).toBe(0);
+    expect(pos.available.toMajor()).toBe(100);
+    expect(
+      (await ledger.entries(WS)).filter((e) => e.kind === "RELEASE"),
+    ).toHaveLength(1);
+  });
+
+  it("extrato com reservado negativo não abate a exposição", () => {
+    const at = new Date("2026-09-02T12:00:00Z");
+    const entry = (
+      id: string,
+      kind: CapitalEntry["kind"],
+      minor: number,
+    ): CapitalEntry => ({
+      id: CapitalEntryId(id),
+      workspaceId: WS,
+      kind,
+      amount: Money.fromMinor(minor, "BRL"),
+      at,
+      reason: "extrato inconsistente",
+    });
+
+    const pos = derivePosition(
+      [
+        entry("e-auth", "AUTHORIZE", 10_000),
+        entry("e-res", "RESERVE", 1_000),
+        entry("e-rel", "RELEASE", 2_500),
+      ],
+      "BRL",
+    );
+    // A soma fica visível; o negativo não devolve capital.
+    expect(pos.reserved.minor).toBe(-1_500);
+    expect(pos.exposure.minor).toBe(0);
+    expect(pos.available.minor).toBe(10_000);
+    expect(pos.exposure.isNegative()).toBe(false);
   });
 
   it("a posição é função pura das entradas (reprocessável)", async () => {
