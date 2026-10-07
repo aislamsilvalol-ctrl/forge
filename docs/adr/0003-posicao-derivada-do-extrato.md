@@ -22,3 +22,8 @@ anúncios isso é irrelevante; se um dia deixar de ser, a resposta é
 `SPEND` acima do `COMMIT` não deixa `committed` negativo: um negativo
 abateria a exposição e mostraria menos dinheiro fora do que realmente saiu.
 Um teste guarda esse comportamento.
+
+`RELEASE` ou `COMMIT` que deixariam `reserved` negativo são recusados na
+escrita. Se o extrato já chegou assim, `reserved` continua a soma (a
+divergência fica visível) e a exposição usa só a parte não negativa — um
+reservado negativo não devolve capital.

@@ -124,7 +124,13 @@ export function derivePosition(
     }
   }
 
-  const exposure = reserved.plus(committed).plus(spent);
+  // Reservado negativo (RELEASE/COMMIT além do que estava separado) não
+  // pode abater a exposição: o campo continua a soma, para a divergência
+  // aparecer, mas o dinheiro fora usa só a parte não negativa. Movimento
+  // novo que causaria isso é recusado em `append` — aqui é a rede para
+  // um extrato que já chegou inconsistente.
+  const reservedExposure = reserved.isNegative() ? zero : reserved;
+  const exposure = reservedExposure.plus(committed).plus(spent);
   const available = authorized.minus(exposure);
   return {
     currency,
@@ -184,6 +190,20 @@ export class CapitalLedger {
         options.idempotencyKey,
       );
       if (existing) return existing;
+    }
+    if (kind === "RELEASE" || kind === "COMMIT") {
+      const position = derivePosition(
+        await this.store.entries(workspaceId),
+        amount.currency,
+      );
+      // Recusa em vez de clampar: um reservado negativo no extrato novo
+      // diminuiria a exposição e liberaria capital que não existe.
+      if (amount.gt(position.reserved)) {
+        throw new Error(
+          `Movimento ${kind} de ${amount.toString()} deixaria o reservado negativo ` +
+            `(reservado atual ${position.reserved.toString()}). Operação recusada`,
+        );
+      }
     }
     const entry: CapitalEntry = {
       id: this.ids.next() as CapitalEntryId,
