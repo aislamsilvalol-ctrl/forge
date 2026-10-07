@@ -27,6 +27,7 @@ import {
 } from "@forge/domain";
 import {
   CapitalLedger,
+  type CapitalEntry,
   type CapitalPosition,
   type CapitalLedgerStore,
 } from "./ledger.js";
@@ -37,7 +38,8 @@ export type DenialReason =
   | "AMOUNT_NOT_POSITIVE"
   | "CURRENCY_MISMATCH"
   | "RESERVATION_NOT_FOUND"
-  | "RESERVATION_ALREADY_SETTLED";
+  | "RESERVATION_ALREADY_SETTLED"
+  | "IDEMPOTENCY_CONFLICT";
 
 export type GuardOutcome<T> =
   | { readonly allowed: true; readonly value: T }
@@ -188,6 +190,17 @@ export class CapitalGuard {
         };
       }
 
+      // O retry precisa achar a reserva antes do teto: a primeira chamada
+      // já consumiu o disponível, e negar aqui devolveria EXCEEDS_AUTHORIZED
+      // em vez da mesma reserva.
+      if (idempotencyKey) {
+        const prior = await this.entryForIdempotencyKey(
+          workspaceId,
+          idempotencyKey,
+        );
+        if (prior) return this.replayReserve(prior, amount);
+      }
+
       const position = await this.ledger.position(workspaceId, amount.currency);
       if (position.authorized.isZero()) {
         return {
@@ -213,21 +226,27 @@ export class CapitalGuard {
         };
       }
 
+      // O id vai na linha antes do save. Se o save falhar, o retry acha
+      // este id na entrada e não abre outra reserva.
+      const reservationId = this.ids.next() as ReservationId;
       const entry = await this.ledger.append(
         workspaceId,
         "RESERVE",
         amount,
         reason,
-        { ...(idempotencyKey ? { idempotencyKey } : {}) },
+        {
+          reservationId,
+          ...(idempotencyKey ? { idempotencyKey } : {}),
+        },
       );
-      // idempotência: se a entrada já existia, devolve a reserva original
-      const existing = entry.reservationId
-        ? await this.reservations.get(entry.reservationId)
-        : undefined;
-      if (existing) return { allowed: true as const, value: existing };
+      // append devolve a entrada antiga quando a chave já existe. O id
+      // gerado nesta tentativa não pode virar uma segunda reserva.
+      if (entry.reservationId !== reservationId) {
+        return this.replayReserve(entry, amount);
+      }
 
       const reservation: Reservation = {
-        id: this.ids.next() as ReservationId,
+        id: reservationId,
         workspaceId,
         amount,
         reason,
@@ -237,6 +256,60 @@ export class CapitalGuard {
       await this.reservations.save(reservation);
       return { allowed: true as const, value: reservation };
     });
+  }
+
+  private async entryForIdempotencyKey(
+    workspaceId: WorkspaceId,
+    key: string,
+  ): Promise<CapitalEntry | undefined> {
+    const entries = await this.ledger.entries(workspaceId);
+    return entries.find((entry) => entry.idempotencyKey === key);
+  }
+
+  /**
+   * A chave já está no extrato. Devolve a reserva ligada a essa linha, ou
+   * nega quando a linha é outro movimento ou outro valor — sem gravar
+   * reserva nova e sem abrir outra linha.
+   */
+  private async replayReserve(
+    entry: CapitalEntry,
+    amount: Money,
+  ): Promise<GuardOutcome<Reservation>> {
+    const sameReserve =
+      entry.kind === "RESERVE" && entry.amount.equals(amount);
+    if (!sameReserve || !entry.reservationId) {
+      const position = await this.ledger.position(
+        entry.workspaceId,
+        amount.currency,
+      );
+      const ownedBy = sameReserve
+        ? "uma RESERVE sem reserva vinculada"
+        : `${entry.kind} de ${entry.amount.toString()}`;
+      return {
+        allowed: false as const,
+        reason: "IDEMPOTENCY_CONFLICT" as const,
+        detail:
+          `Chave de idempotência já pertence a ${ownedBy}; ` +
+          `a reserva pedida é ${amount.toString()}`,
+        position,
+      };
+    }
+
+    const existing = await this.reservations.get(entry.reservationId);
+    if (existing) return { allowed: true as const, value: existing };
+
+    // A linha existe e o objeto não. Recria com o id da linha — um id novo
+    // deixaria duas reservas OPEN para a mesma chave.
+    const reservation: Reservation = {
+      id: entry.reservationId,
+      workspaceId: entry.workspaceId,
+      amount: entry.amount,
+      reason: entry.reason,
+      at: entry.at,
+      state: "OPEN",
+    };
+    await this.reservations.save(reservation);
+    return { allowed: true as const, value: reservation };
   }
 
   /** A ação não vai acontecer: devolve a reserva ao disponível. */
