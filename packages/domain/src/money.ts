@@ -44,15 +44,22 @@ export class Money {
   }
 
   /**
-   * Aceita a unidade maior (reais) apenas na BORDA do sistema — entrada do
-   * usuário, resposta de API. Arredonda meio-para-cima de forma explícita
-   * para que o erro seja auditável em vez de depender do modo do float.
+   * Aceita a unidade maior (reais) só na BORDA — entrada do usuário,
+   * resposta de API. A conversão lê a representação decimal do número
+   * (a string de ida e volta), nunca `major * 100`: essa multiplicação
+   * em float perde um centavo em `1.005` e erra um centavo em valores
+   * grandes (ex.: `90071992547409.9`).
+   *
+   * BRL, USD e EUR têm 2 casas. Mais casas são RECUSADAS, não
+   * arredondadas: arredondar inventaria ou perderia um centavo sem o
+   * chamador saber. `fromMajor(0.1 + 0.2)` carrega o resíduo do float
+   * e é recusado; some valores já convertidos.
    */
   static fromMajor(major: number, currency: Currency): Money {
     if (!Number.isFinite(major)) {
       throw new InvalidMoneyError(`Valor não numérico: ${major}`);
     }
-    return Money.fromMinor(Math.round(major * 100), currency);
+    return Money.fromMinor(minorUnitsFromMajor(major), currency);
   }
 
   static zero(currency: Currency): Money {
@@ -130,3 +137,74 @@ export class Money {
 
 export const sumMoney = (items: readonly Money[], currency: Currency): Money =>
   items.reduce((acc, m) => acc.plus(m), Money.zero(currency));
+
+/**
+ * Casas da unidade menor. As três moedas do domínio usam centavos; se
+ * entrar uma moeda com outra escala, a conversão deixa de ser um único
+ * número.
+ */
+const MINOR_DECIMALS = 2;
+
+/**
+ * Centavos exatos a partir da representação decimal. Não multiplica por
+ * 100 em float: o inteiro é montado com os dígitos da string.
+ */
+function minorUnitsFromMajor(major: number): number {
+  const text = Object.is(major, -0) ? "0" : major.toString();
+  const decimal = expandPlainDecimal(text);
+  const negative = decimal.startsWith("-");
+  const unsigned = negative ? decimal.slice(1) : decimal;
+  const [whole, frac = ""] = unsigned.split(".");
+  if (
+    whole === undefined ||
+    !/^\d+$/.test(whole) ||
+    (frac !== "" && !/^\d+$/.test(frac))
+  ) {
+    throw new InvalidMoneyError(`Valor decimal ilegível: ${text}`);
+  }
+  if (frac.length > MINOR_DECIMALS) {
+    throw new InvalidMoneyError(
+      `Valor ${text} tem ${frac.length} casas decimais; a moeda aceita no máximo ${MINOR_DECIMALS}. ` +
+        `Recusado para não perder nem inventar centavo`,
+    );
+  }
+  const digits = `${whole}${frac.padEnd(MINOR_DECIMALS, "0")}`.replace(
+    /^0+(?=\d)/,
+    "",
+  );
+  const minor = BigInt(`${negative ? "-" : ""}${digits}`);
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  if (minor > max || minor < -max) {
+    throw new InvalidMoneyError(`Valor fora do intervalo seguro: ${text}`);
+  }
+  return Number(minor);
+}
+
+/** Tira a notação científica para contar casas decimais de verdade. */
+function expandPlainDecimal(text: string): string {
+  if (!/[eE]/.test(text)) return text;
+  const match = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(text);
+  if (!match) {
+    throw new InvalidMoneyError(`Valor decimal ilegível: ${text}`);
+  }
+  const sign = match[1] ?? "";
+  const intPart = match[2];
+  const fracPart = match[3] ?? "";
+  const expText = match[4];
+  if (intPart === undefined || expText === undefined) {
+    throw new InvalidMoneyError(`Valor decimal ilegível: ${text}`);
+  }
+  const exp = Number(expText);
+  if (!Number.isInteger(exp)) {
+    throw new InvalidMoneyError(`Valor decimal ilegível: ${text}`);
+  }
+  const digits = `${intPart}${fracPart}`;
+  const point = intPart.length + exp;
+  if (point >= digits.length) {
+    return `${sign}${digits}${"0".repeat(point - digits.length)}`;
+  }
+  if (point > 0) {
+    return `${sign}${digits.slice(0, point)}.${digits.slice(point)}`;
+  }
+  return `${sign}0.${"0".repeat(-point)}${digits}`;
+}
