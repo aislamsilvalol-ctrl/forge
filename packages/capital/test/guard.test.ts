@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   FixedClock,
   Money,
+  ReservationId,
   SequentialIdGenerator,
   WorkspaceId,
 } from "@forge/domain";
@@ -130,6 +131,157 @@ describe("idempotência", () => {
     await guard.authorize(WS, brl(500), "envelope", "auth-1");
     const pos = await guard.position(WS, "BRL");
     expect(pos.authorized.toMajor()).toBe(500);
+  });
+
+  it("retry com a mesma chave devolve a mesma reserva", async () => {
+    const { guard, ledger, reservations } = setup();
+    await guard.authorize(WS, brl(100), "envelope");
+    const key = "decision-42";
+    const first = await guard.reserve(WS, brl(30), "ação", key);
+    const retry = await guard.reserve(WS, brl(30), "ação", key);
+    expect(first.allowed).toBe(true);
+    expect(retry.allowed).toBe(true);
+    if (!first.allowed || !retry.allowed) throw new Error("deveria permitir");
+    expect(retry.value.id).toBe(first.value.id);
+    expect(reservations.all()).toHaveLength(1);
+
+    const reserves = (await ledger.entries(WS)).filter(
+      (e) => e.kind === "RESERVE",
+    );
+    expect(reserves).toHaveLength(1);
+    expect(reserves[0]?.reservationId).toBe(first.value.id);
+    expect(reserves[0]?.idempotencyKey).toBe(key);
+
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.reserved.toMajor()).toBe(30);
+  });
+
+  it("retry devolve a mesma reserva mesmo quando ela já ocupou o envelope", async () => {
+    const { guard, reservations } = setup();
+    await guard.authorize(WS, brl(30), "envelope justo");
+    const key = "decision-tight";
+    const first = await guard.reserve(WS, brl(30), "ação", key);
+    const retry = await guard.reserve(WS, brl(30), "ação", key);
+    expect(first.allowed).toBe(true);
+    expect(retry.allowed).toBe(true);
+    if (!first.allowed || !retry.allowed) throw new Error("deveria permitir");
+    expect(retry.value.id).toBe(first.value.id);
+    expect(reservations.all()).toHaveLength(1);
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.reserved.toMajor()).toBe(30);
+    expect(pos.available.toMajor()).toBe(0);
+  });
+
+  it("commit e release da mesma reserva não devolvem o envelope", async () => {
+    const { guard } = setup();
+    await guard.authorize(WS, brl(100), "envelope");
+    const key = "decision-42";
+    const first = await guard.reserve(WS, brl(30), "ação", key);
+    const retry = await guard.reserve(WS, brl(30), "ação", key);
+    if (!first.allowed || !retry.allowed) throw new Error("deveria permitir");
+    expect(retry.value.id).toBe(first.value.id);
+
+    const committed = await guard.commit(first.value.id, "executado");
+    expect(committed.allowed).toBe(true);
+    const released = await guard.release(
+      retry.value.id,
+      "tentativa de liberar o que já foi comprometido",
+    );
+    expect(released.allowed).toBe(false);
+    if (released.allowed) throw new Error("deveria negar");
+    expect(released.reason).toBe("RESERVATION_ALREADY_SETTLED");
+
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.committed.toMajor()).toBe(30);
+    expect(pos.reserved.toMajor()).toBe(0);
+    expect(pos.available.toMajor()).toBe(70);
+    expect(pos.exposure.toMajor()).toBe(30);
+
+    // O comprometido continua no teto: o envelope inteiro não cabe, o resto cabe.
+    const inteiro = await guard.reserve(WS, brl(100), "envelope inteiro");
+    expect(inteiro.allowed).toBe(false);
+    const resto = await guard.reserve(WS, brl(70), "resto");
+    expect(resto.allowed).toBe(true);
+  });
+
+  it("chave já usada em authorize não cria reserva órfã", async () => {
+    const { guard, ledger, reservations } = setup();
+    await guard.authorize(WS, brl(100), "envelope", "same-key");
+    const r = await guard.reserve(WS, brl(40), "ação", "same-key");
+    expect(r.allowed).toBe(false);
+    if (r.allowed) throw new Error("deveria negar");
+    expect(r.reason).toBe("IDEMPOTENCY_CONFLICT");
+    expect(r.position.authorized.toMajor()).toBe(100);
+    expect(reservations.all()).toHaveLength(0);
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.reserved.toMajor()).toBe(0);
+    expect((await ledger.entries(WS)).map((e) => e.kind)).toEqual([
+      "AUTHORIZE",
+    ]);
+  });
+
+  it("mesma chave em outra moeda é conflito, não CURRENCY_MISMATCH", async () => {
+    const { guard, reservations } = setup();
+    await guard.authorize(WS, brl(100), "envelope");
+    await guard.authorize(WS, Money.fromMajor(100, "USD"), "envelope USD");
+    const key = "decision-fx";
+    const first = await guard.reserve(WS, brl(30), "ação", key);
+    expect(first.allowed).toBe(true);
+
+    const second = await guard.reserve(
+      WS,
+      Money.fromMajor(30, "USD"),
+      "ação",
+      key,
+    );
+    expect(second.allowed).toBe(false);
+    if (second.allowed) throw new Error("deveria negar");
+    expect(second.reason).toBe("IDEMPOTENCY_CONFLICT");
+    expect(reservations.all()).toHaveLength(1);
+    const pos = await guard.position(WS, "USD");
+    expect(pos.reserved.toMajor()).toBe(0);
+  });
+
+  it("mesma chave com valor diferente é negada", async () => {
+    const { guard, reservations } = setup();
+    await guard.authorize(WS, brl(100), "envelope");
+    const key = "decision-42";
+    const first = await guard.reserve(WS, brl(30), "ação", key);
+    expect(first.allowed).toBe(true);
+    if (!first.allowed) throw new Error("primeira deveria passar");
+
+    const second = await guard.reserve(WS, brl(40), "ação", key);
+    expect(second.allowed).toBe(false);
+    if (second.allowed) throw new Error("deveria negar");
+    expect(second.reason).toBe("IDEMPOTENCY_CONFLICT");
+    expect(reservations.all()).toHaveLength(1);
+    expect(reservations.all()[0]?.id).toBe(first.value.id);
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.reserved.toMajor()).toBe(30);
+  });
+
+  it("retry recria a reserva com o id já gravado na linha", async () => {
+    const { guard, ledger, reservations } = setup();
+    await guard.authorize(WS, brl(100), "envelope");
+    const reservationId = ReservationId("res-orphan");
+    await ledger.append(WS, "RESERVE", brl(30), "ação interrompida", {
+      idempotencyKey: "key-orphan",
+      reservationId,
+    });
+
+    const retry = await guard.reserve(WS, brl(30), "ação", "key-orphan");
+    expect(retry.allowed).toBe(true);
+    if (!retry.allowed) throw new Error("deveria permitir");
+    expect(retry.value.id).toBe(reservationId);
+    expect(retry.value.state).toBe("OPEN");
+    expect(retry.value.amount.equals(brl(30))).toBe(true);
+    expect(reservations.all()).toHaveLength(1);
+    expect(
+      (await ledger.entries(WS)).filter((e) => e.kind === "RESERVE"),
+    ).toHaveLength(1);
+
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.reserved.toMajor()).toBe(30);
   });
 });
 
