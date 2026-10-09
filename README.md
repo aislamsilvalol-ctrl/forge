@@ -62,7 +62,8 @@ Two rules shape the whole architecture:
                        META ADS
 ```
 
-**One engine, two surfaces.** `@forge/core` never imports the host
+**One engine, two surfaces.** The libraries (`@forge/domain`,
+`@forge/capital`, `@forge/decision`, `@forge/sentinel`) never import the host
 application. The host imports Forge. That is what lets the same decision
 engine run embedded inside a platform and as a standalone product without a
 fork.
@@ -83,10 +84,10 @@ the financial safety layer must be verifiable on a laptop in seconds.
 
 | Package | What it does | Tests |
 |---|---|---|
-| `@forge/domain` | `Money` in integer minor units, branded IDs, injectable clock | — |
-| `@forge/capital` | Capital ledger + **Capital Guard** | 18 |
-| `@forge/decision` | Immutable decision ledger with an explicit state machine | 12 |
-| `@forge/sentinel` | Guardrails above the agent: kill switch, staleness, step size, cooldown, duplicates | 13 |
+| `@forge/domain` | `Money` in integer minor units, branded IDs, injectable clock | 16 |
+| `@forge/capital` | Capital ledger + **Capital Guard** | 42 |
+| `@forge/decision` | Immutable decision ledger with an explicit state machine | 16 |
+| `@forge/sentinel` | Guardrails above the agent: kill switch, staleness, step size, cooldown, duplicates, mixed currency | 17 |
 
 The Capital Guard suite is the specification of rule number one. It proves,
 among other things, that concurrent workers cannot race past the envelope,

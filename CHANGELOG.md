@@ -29,6 +29,9 @@ All notable changes to this project are documented here. The format follows
   `pnpm audit --audit-level high` do CI deixa de usar `continue-on-error`.
   `tinypool` 2.2.0, `vite` 6.4.4 e `source-map-js` 1.2.2 ficam fixados por
   override: são as versões corrigidas que a 3.2.7 ainda não puxa sozinha.
+- README e o workspace passam a citar só os pacotes que existem
+  (`@forge/domain`, `@forge/capital`, `@forge/decision`, `@forge/sentinel`).
+  `@forge/sentinel` deixa de depender de `@forge/capital` sem importá-lo.
 
 ### Added
 - `@forge/domain` — `Money` in integer minor units, branded IDs, injectable
