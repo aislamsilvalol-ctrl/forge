@@ -11,6 +11,11 @@ All notable changes to this project are documented here. The format follows
   e capital autorizado em moedas diferentes, viram a violação
   `CURRENCY_MISMATCH`. `evaluate` não lança mais `CurrencyMismatchError`, e a
   fração do envelope não divide centavos de moedas distintas.
+- `CapitalLedger.append` (e o store em memória): a mesma chave de idempotência
+  com o mesmo tipo e o mesmo valor devolve a entrada já gravada. Tipo ou valor
+  diferente lança `IdempotencyConflictError` e não grava a segunda linha.
+  `authorize` com a mesma chave e outro valor deixa de devolver o envelope
+  antigo em silêncio.
 
 ### Added
 - `@forge/domain` — `Money` in integer minor units, branded IDs, injectable

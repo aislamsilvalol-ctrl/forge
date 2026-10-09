@@ -7,7 +7,11 @@
  * (testes de contrato), e divergência entre as duas é bug da Oracle.
  */
 import type { CapitalEntryId, WorkspaceId, ReservationId } from "@forge/domain";
-import type { CapitalEntry, CapitalLedgerStore } from "./ledger.js";
+import {
+  IdempotencyConflictError,
+  type CapitalEntry,
+  type CapitalLedgerStore,
+} from "./ledger.js";
 import type { Reservation, ReservationStore } from "./guard.js";
 
 export class InMemoryCapitalLedgerStore implements CapitalLedgerStore {
@@ -15,6 +19,24 @@ export class InMemoryCapitalLedgerStore implements CapitalLedgerStore {
   private readonly byKey = new Map<string, CapitalEntry>();
 
   async append(entry: CapitalEntry): Promise<void> {
+    if (entry.idempotencyKey) {
+      const mapKey = `${entry.workspaceId}::${entry.idempotencyKey}`;
+      const existing = this.byKey.get(mapKey);
+      if (existing) {
+        // Mesma chave não é a mesma entrada se o tipo ou o valor mudou.
+        // Bater os dois é no-op: a linha original continua a única.
+        if (
+          existing.kind === entry.kind &&
+          existing.amount.equals(entry.amount)
+        ) {
+          return;
+        }
+        throw new IdempotencyConflictError(
+          `Chave de idempotência já pertence a ${existing.kind} de ${existing.amount.toString()}; ` +
+            `o movimento pedido é ${entry.kind} de ${entry.amount.toString()}`,
+        );
+      }
+    }
     const list = this.byWorkspace.get(entry.workspaceId) ?? [];
     list.push(entry);
     this.byWorkspace.set(entry.workspaceId, list);

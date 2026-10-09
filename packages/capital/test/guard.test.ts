@@ -353,6 +353,105 @@ describe("idempotência", () => {
   });
 });
 
+describe("chave no extrato", () => {
+  it("mesma chave, mesmo tipo e mesmo valor devolve a entrada existente", async () => {
+    const { ledger } = setup();
+    const first = await ledger.append(WS, "AUTHORIZE", brl(100), "envelope", {
+      idempotencyKey: "k",
+    });
+    const retry = await ledger.append(WS, "AUTHORIZE", brl(100), "outro texto", {
+      idempotencyKey: "k",
+    });
+    expect(retry.id).toBe(first.id);
+    expect(retry.reason).toBe("envelope");
+    expect(await ledger.entries(WS)).toHaveLength(1);
+  });
+
+  it("mesma chave com tipo diferente é conflito e não grava", async () => {
+    const { ledger } = setup();
+    await ledger.append(WS, "AUTHORIZE", brl(100), "envelope", {
+      idempotencyKey: "k",
+    });
+    await expect(
+      ledger.append(WS, "RESERVE", brl(100), "separa", { idempotencyKey: "k" }),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+    expect((await ledger.entries(WS)).map((e) => e.kind)).toEqual([
+      "AUTHORIZE",
+    ]);
+  });
+
+  it("mesma chave com valor ou moeda diferente é conflito e não grava", async () => {
+    const { ledger } = setup();
+    await ledger.append(WS, "AUTHORIZE", brl(100), "envelope", {
+      idempotencyKey: "k-valor",
+    });
+    await expect(
+      ledger.append(WS, "AUTHORIZE", brl(40), "outro valor", {
+        idempotencyKey: "k-valor",
+      }),
+    ).rejects.toMatchObject({ reason: "IDEMPOTENCY_CONFLICT" });
+
+    await ledger.append(WS, "AUTHORIZE", brl(100), "envelope", {
+      idempotencyKey: "k-moeda",
+    });
+    await expect(
+      ledger.append(WS, "AUTHORIZE", Money.fromMajor(100, "USD"), "usd", {
+        idempotencyKey: "k-moeda",
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+
+    const entries = await ledger.entries(WS);
+    expect(entries).toHaveLength(2);
+    expect(entries.every((e) => e.amount.equals(brl(100)))).toBe(true);
+  });
+
+  it("authorize com a mesma chave e outro valor não altera o envelope", async () => {
+    const { guard } = setup();
+    await guard.authorize(WS, brl(500), "envelope", "auth-1");
+    await expect(
+      guard.authorize(WS, brl(200), "outro valor", "auth-1"),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+    const pos = await guard.position(WS, "BRL");
+    expect(pos.authorized.toMajor()).toBe(500);
+  });
+
+  it("o store recusa chave repetida com outro movimento e não duplica a que bate", async () => {
+    const { ledgerStore } = setup();
+    const at = new Date("2026-09-02T12:00:00Z");
+    const base: CapitalEntry = {
+      id: CapitalEntryId("e-1"),
+      workspaceId: WS,
+      kind: "AUTHORIZE",
+      amount: brl(100),
+      at,
+      reason: "envelope",
+      idempotencyKey: "k",
+    };
+    await ledgerStore.append(base);
+    await ledgerStore.append({
+      ...base,
+      id: CapitalEntryId("e-2"),
+      reason: "retry",
+    });
+    await expect(
+      ledgerStore.append({
+        ...base,
+        id: CapitalEntryId("e-3"),
+        kind: "SPEND",
+        amount: brl(10),
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+
+    const entries = await ledgerStore.entries(WS);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe(CapitalEntryId("e-1"));
+    expect(entries[0]?.kind).toBe("AUTHORIZE");
+    expect((await ledgerStore.findByIdempotencyKey(WS, "k"))?.amount.toMajor()).toBe(
+      100,
+    );
+  });
+});
+
 describe("configuração do colchão", () => {
   it("rejeita pendingBufferRatio negativo, acima de 1 ou não finito", () => {
     expect(() => setup(-0.01)).toThrow(/pendingBufferRatio/);

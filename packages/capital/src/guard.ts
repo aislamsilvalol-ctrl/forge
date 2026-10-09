@@ -27,6 +27,7 @@ import {
 } from "@forge/domain";
 import {
   CapitalLedger,
+  IdempotencyConflictError,
   type CapitalEntry,
   type CapitalPosition,
   type CapitalLedgerStore,
@@ -40,21 +41,6 @@ export type DenialReason =
   | "RESERVATION_NOT_FOUND"
   | "RESERVATION_ALREADY_SETTLED"
   | "IDEMPOTENCY_CONFLICT";
-
-/**
- * A chave já está no extrato, ligada a outro movimento ou outro valor.
- * `reserve` devolve isso como `GuardOutcome`; `recordSpend` e `revoke`
- * continuam devolvendo `CapitalPosition` no sucesso, então o conflito
- * sobe como erro — sem gravar a segunda linha.
- */
-export class IdempotencyConflictError extends Error {
-  readonly reason = "IDEMPOTENCY_CONFLICT" as const;
-
-  constructor(detail: string) {
-    super(detail);
-    this.name = "IdempotencyConflictError";
-  }
-}
 
 export type GuardOutcome<T> =
   | { readonly allowed: true; readonly value: T }
@@ -138,7 +124,11 @@ export class CapitalGuard {
     this.bufferRatio = pendingBufferRatioOrDefault(options.pendingBufferRatio);
   }
 
-  /** Autoriza capital. É o único ponto que AUMENTA o que o motor pode gastar. */
+  /**
+   * Autoriza capital. É o único ponto que AUMENTA o que o motor pode gastar.
+   * A mesma chave com o mesmo valor devolve a posição sem outra linha; outro
+   * valor lança `IdempotencyConflictError`.
+   */
   async authorize(
     workspaceId: WorkspaceId,
     amount: Money,

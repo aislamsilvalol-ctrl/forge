@@ -44,8 +44,9 @@ export interface CapitalEntry {
   /** Por que este movimento existe — auditoria legível. */
   readonly reason: string;
   /**
-   * Chave de idempotência do chamador. Duas tentativas com a mesma chave
-   * produzem UMA entrada: retry de rede não pode reservar duas vezes.
+   * Chave de idempotência do chamador. A mesma chave com o mesmo tipo e o
+   * mesmo valor produz UMA entrada: retry de rede não pode reservar duas
+   * vezes. A mesma chave com outro tipo ou outro valor é conflito.
    */
   readonly idempotencyKey?: string;
   readonly meta?: Readonly<Record<string, unknown>>;
@@ -143,6 +144,20 @@ export function derivePosition(
   };
 }
 
+/**
+ * A chave já está no extrato, ligada a outro tipo ou outro valor.
+ * `append` lança isto e não grava a segunda linha. Quem devolve
+ * `GuardOutcome` traduz o conflito; quem devolve posição deixa o erro subir.
+ */
+export class IdempotencyConflictError extends Error {
+  readonly reason = "IDEMPOTENCY_CONFLICT" as const;
+
+  constructor(detail: string) {
+    super(detail);
+    this.name = "IdempotencyConflictError";
+  }
+}
+
 export interface AppendOptions {
   readonly reservationId?: ReservationId;
   readonly idempotencyKey?: string;
@@ -168,9 +183,11 @@ export class CapitalLedger {
   }
 
   /**
-   * Registra um movimento. Se a mesma `idempotencyKey` já foi usada neste
-   * workspace, devolve a entrada original sem criar outra — é o que impede
-   * que um retry do worker reserve capital duas vezes.
+   * Registra um movimento. A mesma `idempotencyKey` com o mesmo tipo e o
+   * mesmo valor devolve a entrada original sem criar outra — retry de rede
+   * não pode reservar duas vezes. Tipo ou valor diferente é
+   * `IdempotencyConflictError`: devolver a entrada antiga faria o chamador
+   * acreditar que o movimento novo entrou.
    */
   async append(
     workspaceId: WorkspaceId,
@@ -189,7 +206,15 @@ export class CapitalLedger {
         workspaceId,
         options.idempotencyKey,
       );
-      if (existing) return existing;
+      if (existing) {
+        if (existing.kind === kind && existing.amount.equals(amount)) {
+          return existing;
+        }
+        throw new IdempotencyConflictError(
+          `Chave de idempotência já pertence a ${existing.kind} de ${existing.amount.toString()}; ` +
+            `o movimento pedido é ${kind} de ${amount.toString()}`,
+        );
+      }
     }
     if (kind === "RELEASE" || kind === "COMMIT") {
       const position = derivePosition(
