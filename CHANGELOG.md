@@ -16,6 +16,9 @@ All notable changes to this project are documented here. The format follows
   diferente lança `IdempotencyConflictError` e não grava a segunda linha.
   `authorize` com a mesma chave e outro valor deixa de devolver o envelope
   antigo em silêncio.
+- Decisão: confiança `NaN`, infinita ou fora de 0..1 é recusada. Gravar outro
+  conteúdo no mesmo id lança `DecisionOverwriteError` em vez de substituir o
+  registro. Uma transição que continua o histórico segue valendo.
 
 ### Added
 - `@forge/domain` — `Money` in integer minor units, branded IDs, injectable

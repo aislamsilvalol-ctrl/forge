@@ -11,6 +11,7 @@ import {
 } from "@forge/domain";
 import {
   DecisionLedger,
+  DecisionOverwriteError,
   InMemoryDecisionStore,
   InvalidTransitionError,
   canTransition,
@@ -72,6 +73,29 @@ describe("proposta", () => {
     await expect(ledger.propose(input({ confidence: 1.4 }))).rejects.toThrow(
       /Confiança/,
     );
+    await expect(ledger.propose(input({ confidence: -0.1 }))).rejects.toThrow(
+      /Confiança/,
+    );
+  });
+
+  it("rejeita confiança NaN ou infinita", async () => {
+    const { ledger } = setup();
+    await expect(
+      ledger.propose(input({ confidence: Number.NaN })),
+    ).rejects.toThrow(/Confiança/);
+    await expect(
+      ledger.propose(input({ confidence: Number.POSITIVE_INFINITY })),
+    ).rejects.toThrow(/Confiança/);
+    await expect(
+      ledger.propose(input({ confidence: Number.NEGATIVE_INFINITY })),
+    ).rejects.toThrow(/Confiança/);
+    expect(await ledger.list(WS)).toHaveLength(0);
+  });
+
+  it("aceita os extremos 0 e 1", async () => {
+    const { ledger } = setup();
+    expect((await ledger.propose(input({ confidence: 0 }))).confidence).toBe(0);
+    expect((await ledger.propose(input({ confidence: 1 }))).confidence).toBe(1);
   });
 
   it("rejeita faixa esperada invertida", async () => {
@@ -153,6 +177,42 @@ describe("máquina de estados", () => {
     expect(canTransition("PROPOSED", "OBSERVED")).toBe(false);
     expect(canTransition("REJECTED", "APPROVED")).toBe(false);
     expect(canTransition("ROLLED_BACK", "EXECUTED")).toBe(false);
+  });
+});
+
+describe("não sobrescreve", () => {
+  it("duas transições ao mesmo tempo não apagam uma à outra", async () => {
+    const { ledger } = setup();
+    const d = await ledger.propose(input());
+    const results = await Promise.allSettled([
+      ledger.transition(d.id, "APPROVED", "operador", "aprovado"),
+      ledger.transition(d.id, "REJECTED", "sentinel", "recusado"),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const failure = rejected[0];
+    expect(failure?.status).toBe("rejected");
+    if (failure?.status !== "rejected") throw new Error("deveria recusar");
+    expect(failure.reason).toBeInstanceOf(DecisionOverwriteError);
+
+    const stored = await ledger.get(d.id);
+    expect(stored?.transitions).toHaveLength(1);
+    expect(stored?.status).toBe("APPROVED");
+    expect(stored?.reason).toBe(d.reason);
+  });
+
+  it("outro conteúdo no mesmo id é erro e o original fica", async () => {
+    const { ledger, store } = setup();
+    const d = await ledger.propose(input());
+    await expect(
+      store.save({ ...d, reason: "história reescrita" }),
+    ).rejects.toBeInstanceOf(DecisionOverwriteError);
+    const stored = await ledger.get(d.id);
+    expect(stored?.reason).toBe(d.reason);
+    expect(stored?.status).toBe("PROPOSED");
+    expect(stored?.transitions).toHaveLength(0);
   });
 });
 

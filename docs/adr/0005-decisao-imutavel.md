@@ -22,3 +22,8 @@ previsão pontual finge uma certeza que não existe, e impede medir calibração
 ## Consequências
 `outcomeWithinExpectation` compara o observado com a faixa prevista — é a
 base da recompensa do aprendizado adaptativo.
+
+Confiança fora de 0..1, `NaN` ou infinita é recusada na proposta: `NaN`
+passaria numa comparação `<` / `>` e entraria no histórico. Uma escrita no
+mesmo id que não continua o snapshot anterior é `DecisionOverwriteError` —
+o store não substitui o registro em silêncio.
