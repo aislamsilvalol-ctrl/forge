@@ -84,7 +84,7 @@ the financial safety layer must be verifiable on a laptop in seconds.
 
 | Package | What it does | Tests |
 |---|---|---|
-| `@forge/domain` | `Money` in integer minor units, branded IDs, injectable clock | 16 |
+| `@forge/domain` | `Money` in integer minor units, branded IDs, injectable clock | 22 |
 | `@forge/capital` | Capital ledger + **Capital Guard** | 42 |
 | `@forge/decision` | Immutable decision ledger with an explicit state machine | 16 |
 | `@forge/sentinel` | Guardrails above the agent: kill switch, staleness, step size, cooldown, duplicates, mixed currency | 17 |

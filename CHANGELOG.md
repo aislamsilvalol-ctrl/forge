@@ -32,6 +32,8 @@ All notable changes to this project are documented here. The format follows
 - README e o workspace passam a citar só os pacotes que existem
   (`@forge/domain`, `@forge/capital`, `@forge/decision`, `@forge/sentinel`).
   `@forge/sentinel` deixa de depender de `@forge/capital` sem importá-lo.
+- `.gitignore` continua sem ignorar `.env.example` e deixa de repetir
+  `*.tsbuildinfo`.
 
 ### Added
 - `@forge/domain` — `Money` in integer minor units, branded IDs, injectable
