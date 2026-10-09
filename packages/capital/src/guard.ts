@@ -46,7 +46,15 @@ export type GuardOutcome<T> =
   | { readonly allowed: true; readonly value: T }
   | {
       readonly allowed: false;
-      readonly reason: DenialReason;
+      readonly reason: "RESERVATION_NOT_FOUND";
+      /** Mensagem para humano, com os números que motivaram a negativa. */
+      readonly detail: string;
+      // Sem `position`: a reserva não existe, então não há moeda para
+      // reportar. Um zero em BRL fazia o cliente ler saldo que não é dele.
+    }
+  | {
+      readonly allowed: false;
+      readonly reason: Exclude<DenialReason, "RESERVATION_NOT_FOUND">;
       /** Mensagem para humano, com os números que motivaram a negativa. */
       readonly detail: string;
       readonly position: CapitalPosition;
@@ -228,6 +236,22 @@ export class CapitalGuard {
 
       const position = await this.ledger.position(workspaceId, amount.currency);
       if (position.authorized.isZero()) {
+        const others = await this.currenciesWithAuthorization(
+          workspaceId,
+          amount.currency,
+        );
+        // Autorizado em outra moeda não é "sem envelope": são duas moedas
+        // reais na mesma operação, e o Guard não converte.
+        if (others.length > 0) {
+          return {
+            allowed: false as const,
+            reason: "CURRENCY_MISMATCH" as const,
+            detail:
+              `Reserva de ${amount.toString()} não usa o capital autorizado em ` +
+              `${others.join(", ")} — o Guard não converte moeda`,
+            position,
+          };
+        }
         return {
           allowed: false as const,
           reason: "NO_AUTHORIZATION" as const,
@@ -461,22 +485,36 @@ export class CapitalGuard {
     }
   }
 
+  /**
+   * Moedas, além da pedida, com autorização ainda positiva. Entrada em
+   * outra moeda sem saldo autorizado não conta: não há segunda moeda real.
+   */
+  private async currenciesWithAuthorization(
+    workspaceId: WorkspaceId,
+    except: Currency,
+  ): Promise<readonly Currency[]> {
+    const entries = await this.ledger.entries(workspaceId);
+    const seen: Currency[] = [];
+    for (const entry of entries) {
+      const currency = entry.amount.currency;
+      if (currency === except || seen.includes(currency)) continue;
+      seen.push(currency);
+    }
+    const positive: Currency[] = [];
+    for (const currency of seen) {
+      const position = await this.ledger.position(workspaceId, currency);
+      if (position.authorized.isPositive()) positive.push(currency);
+    }
+    return positive;
+  }
+
   private async notFound(
     id: ReservationId,
   ): Promise<GuardOutcome<Reservation>> {
     return {
-      allowed: false,
-      reason: "RESERVATION_NOT_FOUND",
+      allowed: false as const,
+      reason: "RESERVATION_NOT_FOUND" as const,
       detail: `Reserva ${id} não encontrada`,
-      position: {
-        currency: "BRL",
-        authorized: Money.zero("BRL"),
-        reserved: Money.zero("BRL"),
-        committed: Money.zero("BRL"),
-        spent: Money.zero("BRL"),
-        available: Money.zero("BRL"),
-        exposure: Money.zero("BRL"),
-      },
     };
   }
 }
