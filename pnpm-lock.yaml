@@ -39,9 +39,6 @@ importers:
 
   packages/sentinel:
     dependencies:
-      '@forge/capital':
-        specifier: workspace:*
-        version: link:../capital
       '@forge/domain':
         specifier: workspace:*
         version: link:../domain
