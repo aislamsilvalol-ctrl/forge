@@ -100,6 +100,20 @@ export class InvalidTransitionError extends Error {
 }
 
 /**
+ * A escrita apagaria uma decisão já gravada. Transição válida continua o
+ * histórico; qualquer outro conteúdo no mesmo id é recusado.
+ */
+export class DecisionOverwriteError extends Error {
+  constructor(id: string) {
+    super(
+      `Decisão ${id} já existe e a escrita apagaria o registro — ` +
+        "uma decisão nova tem de continuar o histórico, não substituí-lo",
+    );
+    this.name = "DecisionOverwriteError";
+  }
+}
+
+/**
  * Máquina de estados explícita. Uma decisão rejeitada não pode "voltar" a
  * ser executada, e uma executada não retorna a proposta — sem isso o
  * histórico poderia ser reescrito para parecer melhor do que foi.
@@ -160,7 +174,13 @@ export class DecisionLedger {
           "precisa declarar o que a sustenta",
       );
     }
-    if (input.confidence < 0 || input.confidence > 1) {
+    // NaN passa em `<` e `>`: as duas comparações são falsas. Infinito
+    // também não é uma confiança calibrada.
+    if (
+      !Number.isFinite(input.confidence) ||
+      input.confidence < 0 ||
+      input.confidence > 1
+    ) {
       throw new Error(`Confiança fora de 0..1: ${input.confidence}`);
     }
     if (input.expected.expectedMin > input.expected.expectedMax) {
@@ -264,9 +284,94 @@ export function outcomeWithinExpectation(decision: Decision): boolean | null {
   return v >= expectedMin && v <= expectedMax;
 }
 
+function sameTransition(
+  left: DecisionTransition,
+  right: DecisionTransition,
+): boolean {
+  return (
+    left.at.getTime() === right.at.getTime() &&
+    left.from === right.from &&
+    left.to === right.to &&
+    left.by === right.by &&
+    left.note === right.note
+  );
+}
+
+function sameObserved(
+  left: Decision["observed"],
+  right: Decision["observed"],
+): boolean {
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  return left.metric === right.metric && left.value === right.value;
+}
+
+/** Campos que uma transição não pode reescrever. */
+function sameIdentity(prev: Decision, next: Decision): boolean {
+  return (
+    prev.id === next.id &&
+    prev.workspaceId === next.workspaceId &&
+    prev.createdAt.getTime() === next.createdAt.getTime() &&
+    prev.targetType === next.targetType &&
+    prev.targetId === next.targetId &&
+    prev.action === next.action &&
+    prev.reason === next.reason &&
+    prev.evidence === next.evidence &&
+    prev.expected === next.expected &&
+    prev.confidence === next.confidence &&
+    prev.capitalAtRisk.equals(next.capitalAtRisk) &&
+    prev.risk === next.risk &&
+    prev.guardrails === next.guardrails &&
+    prev.meta === next.meta
+  );
+}
+
+function sameSnapshot(prev: Decision, next: Decision): boolean {
+  if (prev.status !== next.status) return false;
+  if (prev.transitions.length !== next.transitions.length) return false;
+  for (let i = 0; i < prev.transitions.length; i++) {
+    const left = prev.transitions[i];
+    const right = next.transitions[i];
+    if (!left || !right || !sameTransition(left, right)) return false;
+  }
+  return sameObserved(prev.observed, next.observed);
+}
+
+/**
+ * A segunda escrita ou é o mesmo snapshot, ou acrescenta exatamente uma
+ * transição em cima da anterior. Qualquer outra forma apagaria histórico.
+ */
+function continuesDecision(prev: Decision, next: Decision): boolean {
+  if (!sameIdentity(prev, next)) return false;
+  if (sameSnapshot(prev, next)) return true;
+  if (next.transitions.length !== prev.transitions.length + 1) return false;
+  for (let i = 0; i < prev.transitions.length; i++) {
+    const left = prev.transitions[i];
+    const right = next.transitions[i];
+    if (!left || !right || !sameTransition(left, right)) return false;
+  }
+  const added = next.transitions[next.transitions.length - 1];
+  if (!added || added.from !== prev.status || added.to !== next.status) {
+    return false;
+  }
+  if (prev.observed && !sameObserved(prev.observed, next.observed)) {
+    return false;
+  }
+  if (!prev.observed && next.observed && next.status !== "OBSERVED") {
+    return false;
+  }
+  return true;
+}
+
 export class InMemoryDecisionStore implements DecisionStore {
   private readonly items = new Map<string, Decision>();
   async save(decision: Decision): Promise<void> {
+    const existing = this.items.get(decision.id);
+    // Sem await entre a leitura e a escrita: duas transições no mesmo
+    // processo não podem cada uma gravar por cima da outra.
+    if (existing && !continuesDecision(existing, decision)) {
+      throw new DecisionOverwriteError(decision.id);
+    }
     this.items.set(decision.id, decision);
   }
   async get(id: DecisionId): Promise<Decision | undefined> {
