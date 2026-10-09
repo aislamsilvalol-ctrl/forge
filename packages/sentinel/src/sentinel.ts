@@ -21,7 +21,8 @@ export type SentinelCode =
   | "KILL_SWITCH"
   | "SAFE_MODE"
   | "DAILY_ACTION_LIMIT"
-  | "CAPITAL_SHARE_TOO_HIGH";
+  | "CAPITAL_SHARE_TOO_HIGH"
+  | "CURRENCY_MISMATCH";
 
 export interface SentinelVerdict {
   readonly allowed: boolean;
@@ -134,7 +135,17 @@ export class Sentinel {
     if (ctx.currentValue && ctx.proposedValue) {
       const current = ctx.currentValue;
       const proposed = ctx.proposedValue;
-      if (current.isPositive() && proposed.gt(current)) {
+      // `gt` lança CurrencyMismatchError. O Sentinel é um veto: moeda
+      // trocada entra na lista e a avaliação segue, não explode.
+      if (current.currency !== proposed.currency) {
+        violations.push({
+          code: "CURRENCY_MISMATCH",
+          detail:
+            `Valor atual em ${current.currency} e valor proposto em ` +
+            `${proposed.currency} — o tamanho do passo não compara moedas ` +
+            "diferentes",
+        });
+      } else if (current.isPositive() && proposed.gt(current)) {
         const ratio = (proposed.minor - current.minor) / current.minor;
         if (ratio > this.policy.maxIncreaseRatio) {
           violations.push({
@@ -148,7 +159,17 @@ export class Sentinel {
       }
     }
 
-    if (ctx.authorizedCapital.isPositive()) {
+    if (ctx.capitalAtRisk.currency !== ctx.authorizedCapital.currency) {
+      // A razão dos centavos (500 BRL / 1000 USD) não é uma fração do
+      // envelope: são moedas diferentes. Não dividir.
+      violations.push({
+        code: "CURRENCY_MISMATCH",
+        detail:
+          `Capital em risco em ${ctx.capitalAtRisk.currency} e capital ` +
+          `autorizado em ${ctx.authorizedCapital.currency} — a fração do ` +
+          "envelope só existe dentro da mesma moeda",
+      });
+    } else if (ctx.authorizedCapital.isPositive()) {
       const share = ctx.capitalAtRisk.minor / ctx.authorizedCapital.minor;
       if (share > this.policy.maxCapitalShare) {
         violations.push({

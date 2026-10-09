@@ -155,6 +155,75 @@ describe("resfriamento e duplicata", () => {
   });
 });
 
+describe("moeda", () => {
+  it("passo em moedas diferentes é veto, não exceção", async () => {
+    const { sentinel } = setup();
+    const v = await sentinel.evaluate(
+      ctx({
+        currentValue: brl(100),
+        proposedValue: Money.fromMajor(110, "USD"),
+      }),
+      OPEN,
+    );
+    expect(v.allowed).toBe(false);
+    const codes = v.violations.map((x) => x.code);
+    expect(codes).toContain("CURRENCY_MISMATCH");
+    expect(codes).not.toContain("STEP_TOO_LARGE");
+  });
+
+  it("redução em outra moeda não passa como redução", async () => {
+    const { sentinel } = setup();
+    const v = await sentinel.evaluate(
+      ctx({
+        proposedValue: Money.fromMajor(10, "USD"),
+        capitalAtRisk: brl(10),
+      }),
+      OPEN,
+    );
+    expect(v.allowed).toBe(false);
+    expect(v.violations.map((x) => x.code)).toContain("CURRENCY_MISMATCH");
+  });
+
+  it("cota não divide centavos de moedas diferentes, mesmo se a razão cabe", async () => {
+    const { sentinel } = setup();
+    // 10 / 10000 = 0,1% — abaixo do teto se alguém ignorar a moeda.
+    const v = await sentinel.evaluate(
+      ctx({
+        capitalAtRisk: brl(10),
+        authorizedCapital: Money.fromMajor(10_000, "USD"),
+      }),
+      OPEN,
+    );
+    expect(v.allowed).toBe(false);
+    const codes = v.violations.map((x) => x.code);
+    expect(codes).toContain("CURRENCY_MISMATCH");
+    expect(codes).not.toContain("CAPITAL_SHARE_TOO_HIGH");
+  });
+
+  it("moeda trocada não esconde as outras violações", async () => {
+    const { sentinel } = setup();
+    const v = await sentinel.evaluate(
+      ctx({
+        currentValue: brl(100),
+        proposedValue: Money.fromMajor(400, "USD"),
+        capitalAtRisk: brl(500),
+        authorizedCapital: Money.fromMajor(1000, "EUR"),
+      }),
+      { killSwitch: true, safeMode: false },
+    );
+    const codes = v.violations.map((x) => x.code);
+    expect(codes).toContain("KILL_SWITCH");
+    expect(codes.filter((code) => code === "CURRENCY_MISMATCH")).toHaveLength(
+      2,
+    );
+    expect(codes).not.toContain("STEP_TOO_LARGE");
+    expect(codes).not.toContain("CAPITAL_SHARE_TOO_HIGH");
+    for (const violation of v.violations) {
+      expect(violation.detail.length).toBeGreaterThan(20);
+    }
+  });
+});
+
 describe("veredito", () => {
   it("relata TODAS as violações, não só a primeira", async () => {
     const history = new InMemoryActionHistory();
