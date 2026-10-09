@@ -22,3 +22,9 @@ proteção. Ele não tem uma entrada de texto para ser convencido.
 ## Consequências
 O Sentinel retorna **todas** as violações, não a primeira: quem for corrigir
 precisa ver o conjunto.
+
+Moedas diferentes no passo (valor atual contra o proposto) ou na cota
+(capital em risco contra o autorizado) são a violação `CURRENCY_MISMATCH`.
+A comparação não chama `Money.gt` nesse caso: a exceção de moeda sairia de
+`evaluate` e o chamador perderia o veto. Centavos de moedas diferentes não
+entram na fração do envelope.

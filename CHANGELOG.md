@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Sentinel: valor atual e proposto em moedas diferentes, ou capital em risco
+  e capital autorizado em moedas diferentes, viram a violação
+  `CURRENCY_MISMATCH`. `evaluate` não lança mais `CurrencyMismatchError`, e a
+  fração do envelope não divide centavos de moedas distintas.
+
 ### Added
 - `@forge/domain` — `Money` in integer minor units, branded IDs, injectable
   clock and ID generator.
