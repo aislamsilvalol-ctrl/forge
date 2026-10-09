@@ -700,6 +700,89 @@ describe("invariantes do extrato", () => {
     expect(derived).toEqual(live);
   });
 
+  it("reserva ausente não inventa posição em BRL", async () => {
+    const { guard, ledger } = setup();
+    await guard.authorize(WS, Money.fromMajor(80, "USD"), "envelope USD");
+    const missing = ReservationId("nao-existe");
+
+    const released = await guard.release(missing, "liberar");
+    const committed = await guard.commit(missing, "comprometer");
+    for (const outcome of [released, committed]) {
+      expect(outcome.allowed).toBe(false);
+      if (outcome.allowed) throw new Error("deveria negar");
+      expect(outcome.reason).toBe("RESERVATION_NOT_FOUND");
+      expect("position" in outcome).toBe(false);
+      expect(outcome.detail).toContain(String(missing));
+    }
+
+    expect(await ledger.entries(WS)).toHaveLength(1);
+    const pos = await guard.position(WS, "USD");
+    expect(pos.authorized.toMajor()).toBe(80);
+    expect(pos.currency).toBe("USD");
+  });
+
+  it("reserva na moeda errada é CURRENCY_MISMATCH, não falta de autorização", async () => {
+    const { guard } = setup();
+    await guard.authorize(WS, brl(100), "envelope BRL");
+    const denied = await guard.reserve(
+      WS,
+      Money.fromMajor(10, "USD"),
+      "ação em dólar",
+    );
+    expect(denied.allowed).toBe(false);
+    if (denied.allowed) throw new Error("deveria negar");
+    expect(denied.reason).toBe("CURRENCY_MISMATCH");
+    expect(denied.detail).toContain("USD");
+    expect(denied.detail).toContain("BRL");
+    expect(denied.position.currency).toBe("USD");
+    expect(denied.position.authorized.isZero()).toBe(true);
+    expect(denied.position.reserved.isZero()).toBe(true);
+
+    const brlPos = await guard.position(WS, "BRL");
+    expect(brlPos.authorized.toMajor()).toBe(100);
+    expect(brlPos.reserved.toMajor()).toBe(0);
+    const usdPos = await guard.position(WS, "USD");
+    expect(usdPos.reserved.toMajor()).toBe(0);
+  });
+
+  it("as duas moedas autorizadas, a reserva na segunda não é mismatch", async () => {
+    const { guard } = setup();
+    await guard.authorize(WS, brl(100), "envelope BRL");
+    await guard.authorize(WS, Money.fromMajor(50, "USD"), "envelope USD");
+    const reserved = await guard.reserve(
+      WS,
+      Money.fromMajor(10, "USD"),
+      "ação em dólar",
+    );
+    expect(reserved.allowed).toBe(true);
+    const pos = await guard.position(WS, "USD");
+    expect(pos.reserved.toMajor()).toBe(10);
+    expect(pos.authorized.toMajor()).toBe(50);
+  });
+
+  it("moeda sem nenhuma autorização no workspace continua NO_AUTHORIZATION", async () => {
+    const { guard } = setup();
+    const denied = await guard.reserve(WS, Money.fromMajor(1, "EUR"), "nada");
+    expect(denied.allowed).toBe(false);
+    if (denied.allowed) throw new Error("deveria negar");
+    expect(denied.reason).toBe("NO_AUTHORIZATION");
+    expect(denied.position.currency).toBe("EUR");
+  });
+
+  it("terceira moeda, com outras autorizadas, cita as moedas reais", async () => {
+    const { guard } = setup();
+    await guard.authorize(WS, brl(100), "envelope BRL");
+    await guard.authorize(WS, Money.fromMajor(40, "USD"), "envelope USD");
+    const denied = await guard.reserve(WS, Money.fromMajor(5, "EUR"), "euro");
+    expect(denied.allowed).toBe(false);
+    if (denied.allowed) throw new Error("deveria negar");
+    expect(denied.reason).toBe("CURRENCY_MISMATCH");
+    expect(denied.detail).toContain("BRL");
+    expect(denied.detail).toContain("USD");
+    expect(denied.position.currency).toBe("EUR");
+    expect(denied.position.reserved.isZero()).toBe(true);
+  });
+
   it("moeda diferente não se mistura na mesma posição", async () => {
     const { guard } = setup();
     await guard.authorize(WS, brl(100), "envelope BRL");

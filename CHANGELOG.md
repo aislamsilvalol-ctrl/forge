@@ -19,6 +19,10 @@ All notable changes to this project are documented here. The format follows
 - Decisão: confiança `NaN`, infinita ou fora de 0..1 é recusada. Gravar outro
   conteúdo no mesmo id lança `DecisionOverwriteError` em vez de substituir o
   registro. Uma transição que continua o histórico segue valendo.
+- `release` e `commit` de uma reserva que não existe não devolvem mais uma
+  posição zerada em BRL: a negativa `RESERVATION_NOT_FOUND` não traz
+  `position`. Reservar numa moeda sem autorização, quando outra moeda tem
+  capital autorizado, devolve `CURRENCY_MISMATCH` em vez de `NO_AUTHORIZATION`.
 
 ### Added
 - `@forge/domain` — `Money` in integer minor units, branded IDs, injectable
